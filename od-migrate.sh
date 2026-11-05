@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+
 # od-migrate.sh — batch migration of files from local/USB disks to a OneDrive
 # folder, from WSL2, using rsync over drvfs (/mnt/c, /mnt/e, ...).
 #
@@ -22,10 +23,82 @@
 
 set -euo pipefail
 
+#############################################################################
+# Environment variables                                                     #
+#############################################################################
+
+# Not reinventing the wheel. From the following link:
+# https://www.ludovicocaldara.net/dba/bash-tips-4-use-logging-levels/
+colblk='\033[0;30m' # Black - Regular
+colred='\033[0;31m' # Red
+colgrn='\033[0;32m' # Green
+colylw='\033[0;33m' # Yellow
+colpur='\033[0;35m' # Purple
+colrst='\033[0m'    # Text Reset
+colwht='\033[0;37m' # White
+
+verbosity=5
+
+### verbosity levels
+silent_lvl=0
+crt_lvl=1
+err_lvl=2
+wrn_lvl=3
+ntf_lvl=4
+inf_lvl=5
+dbg_lvl=6
+
 VERSION="1.0.0"
 SCRIPT="$(basename "$0")"
 
 # ---------------------------------------------------------------- helpers ---
+
+function esilent {
+    verb_lvl=$silent_lvl elog "$*"
+}
+
+function enotify {
+    verb_lvl=$ntf_lvl elog "$*"
+}
+
+function eok {
+    verb_lvl=$ntf_lvl elog "SUCCESS - $*"
+}
+
+function ewarn {
+    verb_lvl=$wrn_lvl elog "${colylw}WARNING${colrst} - $*"
+}
+
+function einfo {
+    verb_lvl=$inf_lvl elog "${colwht}INFO${colrst} ---- $*"
+}
+
+function edebug {
+    verb_lvl=$dbg_lvl elog "${colgrn}DEBUG${colrst} --- $*"
+}
+
+function eerror {
+    verb_lvl=$err_lvl elog "${colred}ERROR${colrst} --- $*"
+}
+
+function ecrit {
+    verb_lvl=$crt_lvl elog "${colpur}FATAL${colrst} --- $*"
+}
+
+function edumpvar {
+    for var in "$@"; do
+        edebug "$var=${!var}"
+    done
+}
+
+function elog {
+    datestring=$(date +"%Y-%m-%d %H:%M:%S")
+    if [[ $verbosity -lt $verb_lvl ]]; then
+        echo -e "${datestring} - $*"
+    else
+        echo -e "${datestring} - $*"
+    fi
+}
 
 die()  { printf '%s: error: %s\n' "$SCRIPT" "$*" >&2; exit 1; }
 warn() { printf '%s: warning: %s\n' "$SCRIPT" "$*" >&2; }
@@ -33,9 +106,40 @@ info() { printf '%s: %s\n' "$SCRIPT" "$*" >&2; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"; }
 
+# Print help. usage 0 -> stdout (explicit --help); usage N>0 -> stderr (misuse).
 usage() {
-    sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
-    exit "${1:-0}"
+    local rc="${1:-0}"
+    local text
+    text="$(cat <<EOF
+$SCRIPT $VERSION — batch migration of files from local/USB disks to a OneDrive
+folder, from WSL2, using rsync over drvfs (/mnt/c, /mnt/e, ...).
+
+Usage: $SCRIPT <subcommand> [args...]
+       $SCRIPT -h|--help|help
+
+Subcommands:
+  plan    <source-dir> <batch-size> [plan-dir]     build batch lists + name report
+  mkdirs  <source-dir> <dest-dir>                  replicate directory tree only
+  copy    <batch-file> <dest-dir> [--source DIR]   copy one batch with rsync
+  verify  <batch-file> <dest-dir> [--source DIR]   dry-run: what would still be copied
+  free    <dest-dir>                               dehydrate synced files (free local space)
+  status  <dest-dir>                               count files still occupying local disk
+
+  <batch-size> accepts IEC suffixes (500M, 50G, 1T) or plain bytes.
+  [plan-dir] defaults to ./od-plan-YYYYMMDD-HHMMSS.
+  --source overrides the SOURCE recorded in <plan-dir>/plan.conf.
+  free/status require WSL (powershell.exe) and a dest under /mnt/<drive>.
+
+Typical cycle (repeat for each batch):
+  copy -> wait for OneDrive to sync -> status (until 0 hydrated) -> free -> next copy
+EOF
+)"
+    if (( rc == 0 )); then
+        printf '%s\n' "$text"
+    else
+        printf '%s\n' "$text" >&2
+    fi
+    exit "$rc"
 }
 
 # Parse "50G", "500M", "1T", "123456789" into bytes.
@@ -210,15 +314,25 @@ cmd_mkdirs() {
 # ------------------------------------------------------------ copy/verify ---
 
 parse_batch_args() {
-    [[ $# -ge 2 ]] || usage 1
-    BATCH="$(abspath "$1")"; DEST="$(abspath "$2")"; shift 2
-    local src_override=""
-    while [[ $# -gt 0 ]]; do
+    need getopt
+    # Options may appear before, between or after the positionals
+    # (getopt permutes them); "--" ends options.
+    local parsed src_override=""
+    if ! parsed="$(getopt --options "" --longoptions "source:" \
+                          --name "$SCRIPT" -- "$@")"; then
+        usage 1   # getopt already printed the reason on stderr
+    fi
+    # Safe: getopt output is quoted specifically for this eval.
+    eval set -- "$parsed"
+    while true; do
         case "$1" in
             --source) src_override="$2"; shift 2 ;;
-            *) die "unknown option: $1" ;;
+            --)       shift; break ;;
+            *)        die "internal argument parsing error at: $1" ;;
         esac
     done
+    [[ $# -eq 2 ]] || usage 1
+    BATCH="$(abspath "$1")"; DEST="$(abspath "$2")"
     [[ -f "$BATCH" ]] || die "batch file not found: $BATCH"
     resolve_source "$BATCH" "$src_override"
 }
@@ -294,6 +408,30 @@ cmd_status() {
 
 # ------------------------------------------------------------------- main ---
 
+need getopt
+
+# Global options. The leading "+" makes getopt stop at the first non-option
+# (the subcommand) instead of permuting, so subcommand options such as
+# "copy ... --source DIR" are left for the subcommand's own parser.
+SHORT_OPTS="+h"
+LONG_OPTS="help"
+
+if ! PARSED_OPTIONS="$(getopt --options "$SHORT_OPTS" --longoptions "$LONG_OPTS" \
+                              --name "$SCRIPT" -- "$@")"; then
+    usage 1   # getopt already printed the reason on stderr
+fi
+# Safe: getopt output is quoted specifically for this eval.
+eval set -- "$PARSED_OPTIONS"
+
+while true; do
+    case "$1" in
+        -h|--help) usage 0 ;;
+        --)        shift; break ;;
+        *)         die "internal argument parsing error at: $1" ;;
+    esac
+done
+
+# Remaining positionals: <subcommand> [args...]
 [[ $# -ge 1 ]] || usage 1
 cmd="$1"; shift
 case "$cmd" in
@@ -303,6 +441,6 @@ case "$cmd" in
     verify)  cmd_verify "$@" ;;
     free)    cmd_free "$@" ;;
     status)  cmd_status "$@" ;;
-    -h|--help|help) usage 0 ;;
+    help)    usage 0 ;;
     *) die "unknown subcommand: $cmd (try --help)" ;;
 esac

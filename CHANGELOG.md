@@ -6,6 +6,15 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Changed
+- `usage`: help text is now an explicit heredoc (no longer parsed from the
+  script header), shows the version and option notes; `--help` prints to
+  stdout with exit 0, misuse prints to stderr with exit 1.
+- Argument parsing uses `getopt` (util-linux). Global options are parsed
+  before the subcommand; `copy`/`verify` accept `--source` anywhere among
+  their arguments. A missing `--source` value or an unknown option now gives
+  a clear error plus usage instead of a shell "unbound variable" crash.
+
 ## [1.0.0] - 2026-11-05
 
 ### Added

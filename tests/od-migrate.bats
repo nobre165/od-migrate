@@ -5,6 +5,8 @@
 #
 # Run: bats tests/
 
+bats_require_minimum_version 1.5.0
+
 SCRIPT="$BATS_TEST_DIRNAME/../od-migrate.sh"
 
 setup() {
@@ -25,6 +27,21 @@ teardown() { rm -rf "$TMP"; }
     run "$SCRIPT"
     [ "$status" -eq 1 ]
     [[ "$output" == *"Subcommands:"* ]]
+}
+
+@test "--help prints usage to stdout and exits 0" {
+    run --separate-stderr "$SCRIPT" --help
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"Usage:"*"Subcommands:"* ]]
+    [[ "$output" == *"plan "*"mkdirs "*"copy "*"verify "*"free "*"status "* ]]
+    [ -z "$stderr" ]
+}
+
+@test "subcommand with missing args prints usage to stderr and exits 1" {
+    run --separate-stderr "$SCRIPT" copy
+    [ "$status" -eq 1 ]
+    [ -z "$output" ]
+    [[ "$stderr" == *"Usage:"* ]]
 }
 
 @test "unknown subcommand fails" {
@@ -105,6 +122,36 @@ teardown() { rm -rf "$TMP"; }
     run "$SCRIPT" copy "$PLAN/batch-0001.txt" "$DST" --source "$SRC"
     [ "$status" -eq 0 ]
     [ -f "$DST/root.txt" ]
+}
+
+@test "copy accepts --source before the positional arguments" {
+    "$SCRIPT" plan "$SRC" 1T "$PLAN"
+    rm "$PLAN/plan.conf"
+    run "$SCRIPT" copy --source "$SRC" "$PLAN/batch-0001.txt" "$DST"
+    [ "$status" -eq 0 ]
+    [ -f "$DST/root.txt" ]
+}
+
+@test "copy rejects --source without a value and unknown options" {
+    "$SCRIPT" plan "$SRC" 1T "$PLAN"
+    run --separate-stderr "$SCRIPT" copy "$PLAN/batch-0001.txt" "$DST" --source
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"requires an argument"*"Usage:"* ]]
+    run --separate-stderr "$SCRIPT" copy "$PLAN/batch-0001.txt" "$DST" --bogus
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"unrecognized option"*"Usage:"* ]]
+    run "$SCRIPT" copy "$PLAN/batch-0001.txt" "$DST" extra
+    [ "$status" -eq 1 ]
+}
+
+@test "unknown global option prints usage and exits 1" {
+    run --separate-stderr "$SCRIPT" --bogus
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"unrecognized option"*"Usage:"* ]]
+    run "$SCRIPT" -h
+    [ "$status" -eq 0 ]
+    run "$SCRIPT" help
+    [ "$status" -eq 0 ]
 }
 
 @test "verify reports pending files and clean batches" {
