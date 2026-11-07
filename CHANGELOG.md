@@ -6,6 +6,16 @@ All notable changes to this project are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+- `od-migrate.ps1`: native Windows version (PowerShell 5.1+, robocopy) with
+  the same subcommands, name rules and free-space check. Bounded robocopy
+  retries (`-Retries`, `-WaitSeconds`), optional `-Threads` and
+  `-Restartable`. Does not go through drvfs, where the WSL version can hit
+  I/O errors.
+- `od-migrate.cmd`: wrapper to run `od-migrate.ps1` from cmd.exe.
+- Pester test suite and a Windows CI job (PSScriptAnalyzer + Pester on
+  Windows PowerShell 5.1).
+
 ### Changed
 - `usage`: help text is now an explicit heredoc (no longer parsed from the
   script header), shows the version and option notes; `--help` prints to

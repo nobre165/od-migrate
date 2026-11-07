@@ -1,7 +1,12 @@
 # od-migrate
 
 Batch migration of large directory trees (hundreds of GB) from a local or USB
-disk into a OneDrive folder, from WSL, using `rsync`.
+disk into a OneDrive folder. Two implementations of the same workflow:
+
+- `od-migrate.sh` - Bash + `rsync`, runs under WSL.
+- `od-migrate.ps1` - Windows PowerShell + `robocopy`, runs natively on Windows
+  (from PowerShell, or from cmd via `od-migrate.cmd`). Prefer it when the WSL
+  version hits I/O errors on `/mnt/<drive>`: it does not go through drvfs.
 
 ## The problem it solves
 
@@ -55,12 +60,63 @@ DST="/mnt/c/Users/REPLACE_USER/OneDrive - REPLACE_COMPANY/REPLACE_TARGET_DIR"
 Use a separate plan directory per source (one for `C:`, one for the USB disk);
 `copy` reads the right source from each plan's `plan.conf`.
 
+## Windows-native version (PowerShell + robocopy)
+
+Same subcommands and cycle, no WSL needed. Runs on the Windows PowerShell 5.1
+that ships with Windows 11; nothing to install.
+
+```powershell
+$Src = 'E:\REPLACE_SOURCE_DIR'
+$Dst = 'C:\Users\REPLACE_USER\OneDrive - REPLACE_COMPANY\REPLACE_TARGET_DIR'
+
+.\od-migrate.ps1 plan   $Src 50G .\plan-data
+.\od-migrate.ps1 mkdirs $Src $Dst
+.\od-migrate.ps1 copy   .\plan-data\batch-0001.txt $Dst
+.\od-migrate.ps1 status $Dst
+.\od-migrate.ps1 free   $Dst
+.\od-migrate.ps1 verify .\plan-data\batch-0001.txt $Dst
+```
+
+From cmd.exe use the wrapper, which also bypasses the execution policy for
+that one process:
+
+```bat
+od-migrate.cmd copy plan-data\batch-0001.txt "C:\Users\REPLACE_USER\OneDrive - REPLACE_COMPANY\REPLACE_TARGET_DIR"
+```
+
+If PowerShell refuses to run the script directly ("running scripts is
+disabled" or "not digitally signed"), use `od-migrate.cmd`, or run
+`Unblock-File .\od-migrate.ps1` once for a downloaded copy.
+
+Differences from the Bash version:
+
+| | `od-migrate.sh` | `od-migrate.ps1` |
+|---|---|---|
+| Batch files | NUL-separated, `/` separators | UTF-8, one path per line, `\` separators |
+| Plan config | `plan.conf` | `plan.json` |
+| Source override | `--source DIR` | `-Source DIR` |
+| Copy engine | one `rsync --files-from` per batch | one `robocopy` per directory of the batch, file names as filters |
+| Retries on I/O errors | none (rsync fails the file) | `-Retries N` (default 5), `-WaitSeconds N` (default 10) |
+| Extra options | - | `-Threads N` (`/MT:N`), `-Restartable` (`/Z`, resumes large files after an error) |
+| Reparse points | symlinks skipped | junctions/symlinks skipped and listed in `invalid-names.tsv` as `reparse-point` |
+
+Plans are **not** interchangeable: a plan made by one script must be copied
+with the same script. Name rules, batch packing, the `.bytes` sidecars and
+the 5% free-space check are the same.
+
+`copy` keeps going when a directory fails, then exits 1 and lists the failed
+directories; details are in `batch-NNNN.log` (UTF-16, search for `ERROR`).
+Re-running the same `copy` only transfers what is missing. A persistent
+`ERROR 1117` / `ERROR 23` on the *source* points to a failing disk or cable
+(`chkdsk E: /f`, another USB port), not to this tool.
+
 ## Supported environments
 
 | Environment | plan / mkdirs / copy / verify | free / status |
 |---|---|---|
 | WSL2 (Ubuntu) on Windows 11, source and destination under `/mnt/<drive>` | yes — the target use case | yes |
 | Native Linux (development, CI) | yes | no — `powershell.exe` is absent; the commands fail with a clear error |
+| Windows 10/11, `od-migrate.ps1` (PowerShell 5.1 or 7) | yes | yes |
 
 `rsync` is run with `--inplace --no-perms --no-owner --no-group -W` because the
 destination is NTFS mounted through drvfs. These flags are harmless on native
@@ -88,11 +144,18 @@ Rename them and run `plan` again, or they will never be copied.
   (`attrib +U -P`, `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`). Validate against
   what Explorer shows on your first batch.
 - Symlinks are skipped (`--no-links`).
+- `od-migrate.ps1`: robocopy file filters also match 8.3 short names, so a
+  file literally named like another file's short name (`REPORT~1.DOC`) can
+  pull that other file into the batch too. Harmless (one extra file), rare.
+- `od-migrate.ps1`: `free` uses `attrib`, which may skip paths longer than
+  260 characters unless Windows long paths are enabled.
 
 ## Requirements
 
 - bash 4+, GNU coreutils (`find`, `sort`, `numfmt`, `readlink`, `df`), `rsync`
 - Under WSL: `wslpath` and `powershell.exe` on `PATH` (default on WSL2)
+- `od-migrate.ps1`: Windows PowerShell 5.1 (built in) or PowerShell 7;
+  `robocopy.exe` and `attrib.exe` (built in)
 
 ```bash
 sudo apt install -y rsync coreutils
@@ -106,7 +169,21 @@ shellcheck od-migrate.sh
 bats tests/
 ```
 
-CI (`.github/workflows/ci.yml`) runs both on every push and pull request.
+PowerShell version (Pester 5+ and PSScriptAnalyzer). On Windows everything
+runs; with `pwsh` on Linux the robocopy tests are skipped, but the helper
+tests (name rules checked against `od-migrate.sh`, sizes, batch layout) and
+the command-line tests still run:
+
+```powershell
+Install-Module Pester -MinimumVersion 5.5.0 -Scope CurrentUser -SkipPublisherCheck
+Install-Module PSScriptAnalyzer -Scope CurrentUser
+Invoke-ScriptAnalyzer -Path od-migrate.ps1
+Invoke-Pester tests
+```
+
+CI (`.github/workflows/ci.yml`) runs all of the above on every push and pull
+request: the Bash suite and the portable Pester tests (PowerShell 7) on
+Ubuntu, the full Pester suite on Windows PowerShell 5.1 (`windows-latest`).
 The test suite covers `plan`, `mkdirs`, `copy`, `verify` and the clean failure
 of `free`/`status` without PowerShell; the Windows-only behaviour is tested
 manually (see `CLAUDE.md`).
