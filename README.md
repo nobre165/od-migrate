@@ -86,7 +86,39 @@ od-migrate.cmd copy plan-data\batch-0001.txt "C:\Users\REPLACE_USER\OneDrive - R
 
 If PowerShell refuses to run the script directly ("running scripts is
 disabled" or "not digitally signed"), use `od-migrate.cmd`, or run
-`Unblock-File .\od-migrate.ps1` once for a downloaded copy.
+`Unblock-File .\od-migrate.ps1` once for a downloaded copy. If you
+downloaded the repository as a ZIP, unblock everything after extracting:
+`Get-ChildItem -Recurse | Unblock-File`. To run `.ps1` files directly from
+now on, `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned` is enough; it
+does not need administrator rights.
+
+### Do not run as administrator
+
+Run `od-migrate` from a normal PowerShell or cmd window, as the same user
+that is signed in to OneDrive. Administrator rights are not needed and are
+best avoided:
+
+- robocopy only needs them to copy permissions/owner (`/COPY:S/O/U`) or for
+  backup mode (`/B`, `/ZB`). This tool uses `/COPY:DT` (data and
+  timestamps) only.
+- `free` and `status` work on files inside your own OneDrive folder.
+- The OneDrive client runs as your user. Files created from an elevated
+  window can end up owned by the Administrators group, which can cause sync
+  or permission problems later.
+- Mapped network drives (`Z:`) are not visible from an elevated window, so
+  a source on a mapped drive "does not exist" there.
+
+The exception is a source with folders your user cannot read, for example
+another user's profile on an old disk: `plan` warns `cannot read directory`
+and the `copy` log shows `ERROR 5 (0x00000005) ... Access is denied`.
+Running the whole tool elevated is not a good fix, because of the ownership
+problem above. Instead, take ownership of just those source folders once,
+from an administrator window, then run `od-migrate` normally:
+
+```powershell
+takeown /f "E:\REPLACE_LOCKED_DIR" /r /d y
+icacls "E:\REPLACE_LOCKED_DIR" /grant "${env:USERNAME}:(OI)(CI)R" /t
+```
 
 Differences from the Bash version:
 
