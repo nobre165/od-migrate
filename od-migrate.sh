@@ -29,14 +29,19 @@ set -euo pipefail
 
 # Not reinventing the wheel. From the following link:
 # https://www.ludovicocaldara.net/dba/bash-tips-4-use-logging-levels/
-colblk='\033[0;30m' # Black - Regular
-colred='\033[0;31m' # Red
-colgrn='\033[0;32m' # Green
-colylw='\033[0;33m' # Yellow
-colpur='\033[0;35m' # Purple
-colrst='\033[0m'    # Text Reset
-colwht='\033[0;37m' # White
+# Colours only when stderr is a terminal, so logs and test output stay clean.
+if [[ -t 2 ]]; then
+    colred='\033[0;31m' # Red
+    colgrn='\033[0;32m' # Green
+    colylw='\033[0;33m' # Yellow
+    colpur='\033[0;35m' # Purple
+    colrst='\033[0m'    # Text Reset
+    colwht='\033[0;37m' # White
+else
+    colred='' colgrn='' colylw='' colpur='' colrst='' colwht=''
+fi
 
+# Messages with a level above this are not printed (see levels below).
 verbosity=5
 
 ### verbosity levels
@@ -86,18 +91,20 @@ function ecrit {
 }
 
 function edumpvar {
+    local var
     for var in "$@"; do
         edebug "$var=${!var}"
     done
 }
 
+# Print "<timestamp> - <message>" on stderr if the message level is within
+# $verbosity. The e* wrappers pass the level as a per-call variable
+# (verb_lvl=N elog ...); a direct call to elog defaults to the info level.
 function elog {
+    local level="${verb_lvl:-$inf_lvl}" datestring
+    (( level <= verbosity )) || return 0
     datestring=$(date +"%Y-%m-%d %H:%M:%S")
-    if [[ $verbosity -lt $verb_lvl ]]; then
-        echo -e "${datestring} - $*"
-    else
-        echo -e "${datestring} - $*"
-    fi
+    printf '%s - %b\n' "$datestring" "$*" >&2
 }
 
 die()  { printf '%s: error: %s\n' "$SCRIPT" "$*" >&2; exit 1; }
